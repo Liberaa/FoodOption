@@ -3,9 +3,9 @@ const { scrapeIca } = require('./services/scrapers/icaScraper');
 (async () => {
   try {
     const products = await scrapeIca(['mjölk']);
-    console.log(`✅ ICA scraped ${products.length} products`);
-    console.log(products);
+    console.log('✅ Scraped products:', products.length);
+    console.dir(products, { depth: null });
   } catch (err) {
-    console.error('❌ ICA scrape error:', err);
+    console.error('❌ Error scraping ICA:', err);
   }
 })();
