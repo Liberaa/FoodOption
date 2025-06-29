@@ -1,0 +1,44 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Environment variables
+.env
+.env.*.local
+
+# Dependency directories
+node_modules/
+
+# Build / coverage
+dist/
+coverage/
+.nyc_output/
+
+# Test output
+jest-html-reporters-*
+/tmp
+*.lcov
+
+# OS / Editor junk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Optional npm cache directory
+.npm/
+
+# Debugger settings
+.vscode/launch.json
+.vscode/tasks.json
