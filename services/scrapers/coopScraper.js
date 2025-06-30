@@ -1,116 +1,130 @@
-const puppeteer      = require('puppeteer-extra');
-const StealthPlugin  = require('puppeteer-extra-plugin-stealth');
-const Product        = require('../../models/productModel');
-puppeteer.use(StealthPlugin());
+// services/scrapers/coopScraper.js
+const puppeteer = require('puppeteer');
+const Product   = require('../../models/productModel');
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const sleep = ms => new Promise(res => setTimeout(res, ms));
 
-/* ───────── brutalt stäng alla cookie-popuper ─────────────── */
-async function killCookies(page) {
-  const SEL = [
-    '#onetrust-accept-btn-handler',
-    '.cmpboxbtnyes', 'a.cmpboxbtnyes',
-    '[data-testid="accept-cookies-button"]'
-  ].join(',');
-  for (let i = 0; i < 8; i++) {
-    let hit = false;
-    for (const f of page.frames()) {
-      const btns = await f.$$(SEL);
-      for (const b of btns) { await b.click().catch(()=>{}); hit = true; }
-    }
-    if (!hit) break;
-    await sleep(400);
-  }
-}
-
-/* ───────── plocka produkter ur __NEXT_DATA__ ─────────────── */
-function extractFromNext(rawJson) {
-  try {
-    const data = JSON.parse(rawJson);
-    const recurse = obj => {
-      if (!obj || typeof obj !== 'object') return [];
-      if (Array.isArray(obj) && obj.length && obj[0]?.name && obj[0]?.price)
-        return obj;
-      return Object.values(obj).flatMap(recurse);
-    };
-    return recurse(data);
-  } catch { return []; }
-}
-
-/* ───────── DOM-fallback (brett) ──────────────────────────── */
-async function domFallback(page) {
-  /* scrolla lite så allt hinner renderas */
-  await page.evaluate('window.scrollTo(0, 0)');
-  for (let y = 0; y < 4; y++) {
-    await page.evaluate(h => window.scrollBy(0, h), 500 + y * 500);
-    await sleep(400);
-  }
-
-  return await page.$$eval('a[href*="/handla/varor/"]', links => {
-    const hits = [];
-    links.forEach(a => {
-      const card = a.closest('article, div, li') || a;
-      const txt  = card.innerText || '';
-      const m    = txt.match(/(\d+,\d{2})/);          // pris med komma
-      if (!m) return;
-      const name = txt.split('\n')[0].trim();
-      const price = parseFloat(m[1].replace(',','.'));
-      const img = card.querySelector('img')?.src || '';
-      if (name && !isNaN(price)) hits.push({name,price,url:a.href,img});
-    });
-    return hits;
+/**
+ * Accept any visible cookie banner.
+ */
+async function handleCookies(page) {
+  await sleep(1000);
+  await page.evaluate(() => {
+    const btn = Array.from(document.querySelectorAll('button'))
+      .find(b => /acceptera|godkänn|accept/i.test(b.textContent));
+    if (btn && btn.offsetParent !== null) btn.click();
   });
+  await sleep(500);
 }
 
-/* ───────── skrapa ett sökord ─────────────────────────────── */
-async function scrapeOne(page, term) {
-  console.log(`🔍 "${term}"`);
+/**
+ * Load a Coop search or category page, wait for the grid to render,
+ * then extract product data from each card.
+ * Supports any searchTerm (e.g. 'mjölk', 'ägg', etc.).
+ */
+async function scrapePage(page, term, pageNum) {
+  // Build URL dynamically: either category or search
+  const baseUrl = `https://www.coop.se/handla/varor/`;
+  // Use search parameter
+  const url = pageNum === 1
+    ? `${baseUrl}?search=${encodeURIComponent(term)}`
+    : `${baseUrl}?search=${encodeURIComponent(term)}&page=${pageNum}`;
 
-  const url = `https://www.coop.se/globalt-sok/?query=${encodeURIComponent(term)}`;
-  await page.goto(url, { waitUntil:'domcontentloaded', timeout:60000 });
-  await sleep(1200);
-  await killCookies(page);
+  console.log(`🔍 Loading ${url}`);
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+  await handleCookies(page);
 
-  /* 1️⃣ försök __NEXT_DATA__ */
-  let hits = await page.evaluate(() => {
-    const raw = document.querySelector('#__NEXT_DATA__')?.textContent || '';
-    return raw;
-  });
-  hits = extractFromNext(hits);
-  console.log(`   NEXT_DATA-träffar: ${hits.length}`);
+  // Wait for product grid cells
+  await page.waitForSelector('ul.Grid-items > li.Grid-cell', { timeout: 15000 });
+  await sleep(500);
 
-  /* 2️⃣ fallback DOM om tomt */
-  if (!hits.length) {
-    console.log('   ⏳ DOM-fallback …');
-    hits = await domFallback(page);
-    console.log(`   DOM-träffar: ${hits.length}`);
-  }
+  // Extract each product card
+  const items = await page.$$eval('ul.Grid-items > li.Grid-cell', cards =>
+    cards.map(card => {
+      const link = card.querySelector('a[href*="/handla/varor/"]');
+      if (!link) return null;
 
-  return hits.map(p => new Product(
-    p.name,
-    parseFloat(String(p.price).replace(',', '.')),
-    'Coop',
-    p.url.startsWith('http') ? p.url : `https://www.coop.se${p.url}`,
-    p.img || p.images?.[0]?.url || ''
-  ));
+      // Name: use aria-label if available, else image alt or first line
+      const aria = link.getAttribute('aria-label');
+      let name = aria ? aria.split(',')[0].trim() : null;
+      if (!name) {
+        const img = card.querySelector('img');
+        name = img?.alt?.trim() || card.innerText.split('\n')[0].trim();
+      }
+      if (!name) return null;
+
+      // URL
+      let href = link.href || link.getAttribute('href');
+      if (href.startsWith('/')) href = location.origin + href;
+
+      // Image
+      const imgEl = card.querySelector('img');
+      let image = imgEl
+        ? (imgEl.src || imgEl.getAttribute('data-src') || '')
+        : '';
+      if (image.startsWith('//')) image = location.protocol + image;
+
+      // Price: find element containing "kr/st"
+      const priceEl = Array.from(card.querySelectorAll('div'))
+        .find(el => /kr\s*\/st/.test(el.innerText));
+      if (!priceEl) return null;
+      const m = priceEl.innerText.match(/([\d\.,]+)\s*kr/);
+      if (!m) return null;
+      const price = parseFloat(m[1].replace(',', '.'));
+
+      return { name, price, url: href, image, store: 'Coop' };
+    }).filter(x => x)
+  );
+
+  console.log(`📊 ${items.length} products found for "${term}" on page ${pageNum}`);
+  return items;
 }
 
-/* ───────── publikt API ───────────────────────────────────── */
-async function scrapeCoop(searchTerms = ['mjölk']) {
-  if (!Array.isArray(searchTerms)) searchTerms = [searchTerms];
-
+/**
+ * scrapeCoop(searchTerms, maxPages)
+ * Performs a Coop search for each term, scraping up to maxPages of results.
+ */
+async function scrapeCoop(searchTerms = ['mjölk'], maxPages = 5) {
+  console.log('🚀 Starting Coop scraper…');
   const browser = await puppeteer.launch({
-    headless: false,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    headless: true,
+    args: ['--no-sandbox'],
     defaultViewport: { width: 1366, height: 768 }
   });
+  const page = await browser.newPage();
+  await page.setUserAgent(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+    'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  );
+  await page.setExtraHTTPHeaders({ 'Accept-Language': 'sv-SE,sv;q=0.9,en;q=0.8' });
 
   try {
-    const page = await browser.newPage();
-    const all  = [];
-    for (const t of searchTerms) all.push(...await scrapeOne(page, t));
-    return all;
-  } finally { await browser.close(); }
+    const term = Array.isArray(searchTerms) ? searchTerms[0] : searchTerms;
+    let allProducts = [];
+
+    for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+      const products = await scrapePage(page, term, pageNum);
+      if (products.length === 0) break;
+      allProducts.push(...products);
+    }
+
+    // Deduplicate by name+price
+    const seen = new Set();
+    const unique = allProducts.filter(p => {
+      const key = `${p.name}|${p.price}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    console.log(`\n🎉 Done! ${unique.length} unique products found for "${term}".`);
+    return unique.map(p => new Product(p.name, p.price, p.store, p.url, p.image));
+  } catch (err) {
+    console.error('❌ Scrape failed:', err);
+    return [];
+  } finally {
+    await browser.close();
+  }
 }
 
 module.exports = { scrapeCoop };
