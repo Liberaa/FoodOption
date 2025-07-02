@@ -1,4 +1,5 @@
-
+<!DOCTYPE html>
+<html lang="sv">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -6,13 +7,29 @@
   <link rel="stylesheet" href="/css/styles.css" />
 </head>
 
-
 <body>
   <h1>Compare Food Prices</h1>
+
   <form id="search-form">
-    <input type="text" id="search-input" placeholder="Search for a product..." />
+    <input
+      type="text"
+      id="search-input"
+      placeholder="Search for a product..."
+      required
+    />
     <button type="submit">Search</button>
+
+    <!-- Sort control -->
+    <label for="sort-select">Sort by:</label>
+    <select id="sort-select">
+      <option value="none">Relevance</option>
+      <option value="price-asc">Lowest Price</option>
+      <option value="price-desc">Highest Price</option>
+    </select>
   </form>
+
   <div id="product-list"></div>
+
   <script src="/js/main.js"></script>
 </body>
+</html>
