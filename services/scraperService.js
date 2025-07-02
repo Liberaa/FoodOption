@@ -1,6 +1,7 @@
-const { scrapeHemkop } = require('./scrapers/hemkopScraper');
-const { scrapeIca }    = require('./scrapers/icaScraper');
-const { scrapeCoop }   = require('./scrapers/coopScraper');
+const { scrapeHemkop }   = require('./scrapers/hemkopScraper');
+const { scrapeIca }      = require('./scrapers/icaScraper');
+const { scrapeCoop }     = require('./scrapers/coopScraper');
+const { scrapeMatsmart } = require('./scrapers/matSmart');  // ← new
 
 /**
  * Scrapar alla angivna butiker med gemensamt interface
@@ -32,6 +33,14 @@ exports.scrapeAllStores = async (searchTerms = ['mjölk']) => {
     allProducts.push(...coopProducts);
   } catch (err) {
     console.error('❌ Coop failed:', err.message);
+  }
+
+  // Matsmart
+  try {
+    const matsmartProducts = await scrapeMatsmart(searchTerms);
+    allProducts.push(...matsmartProducts);
+  } catch (err) {
+    console.error('❌ Matsmart failed:', err.message);
   }
 
   return allProducts;

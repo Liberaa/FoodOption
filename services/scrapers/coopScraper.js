@@ -18,38 +18,65 @@ async function handleCookies(page) {
 }
 
 /**
- * Load a Coop search or category page, wait for the grid to render,
- * then extract product data from each card.
- * Supports any searchTerm (e.g. 'mjölk', 'ägg', etc.).
+ * Perform a search by clicking into the search input on the Coop varor page,
+ * typing the term, pressing Enter, and waiting for navigation to complete.
  */
-async function scrapePage(page, term, pageNum) {
-  // Build URL dynamically: either category or search
-  const baseUrl = `https://www.coop.se/handla/varor/`;
-  // Use search parameter
-  const url = pageNum === 1
-    ? `${baseUrl}?search=${encodeURIComponent(term)}`
-    : `${baseUrl}?search=${encodeURIComponent(term)}&page=${pageNum}`;
-
-  console.log(`🔍 Loading ${url}`);
-  await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+async function performSearch(page, term) {
+  console.log(`🔍 Performing search for "${term}"`);
+  await page.goto('https://www.coop.se/handla/varor/', {
+    waitUntil: 'networkidle2', timeout: 30000
+  });
   await handleCookies(page);
 
-  // Wait for product grid cells
-  await page.waitForSelector('ul.Grid-items > li.Grid-cell', { timeout: 15000 });
+  const inputSelector = 'input[data-testid="search-input"]';
+  await page.waitForSelector(inputSelector, { timeout: 10000 });
+  await page.click(inputSelector);
+  await page.focus(inputSelector);
+  // Clear any existing text
+  await page.keyboard.down('Control');
+  await page.keyboard.press('A');
+  await page.keyboard.up('Control');
+  await page.keyboard.press('Backspace');
+
+  await page.type(inputSelector, term, { delay: 100 });
+  await Promise.all([
+    page.keyboard.press('Enter'),
+    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
+  ]);
+
+  await handleCookies(page);
+  // Wait for results grid
+  await page.waitForSelector('ul.Grid-items > li.Grid-cell', { timeout: 30000 });
+  console.log(`✅ Search results loaded for "${term}"`);
+}
+
+/**
+ * Scrape products from a single search result page.
+ */
+async function scrapeResultsPage(page, pageNum) {
+  console.log(`📄 Scraping results page ${pageNum}`);
+  if (pageNum > 1) {
+    const url = new URL(page.url());
+    url.searchParams.set('page', pageNum);
+    await page.goto(url.toString(), {
+      waitUntil: 'networkidle2', timeout: 30000
+    });
+    await handleCookies(page);
+    await page.waitForSelector('ul.Grid-items > li.Grid-cell', { timeout: 30000 });
+  }
   await sleep(500);
 
-  // Extract each product card
-  const items = await page.$$eval('ul.Grid-items > li.Grid-cell', cards =>
+  const products = await page.$$eval('ul.Grid-items > li.Grid-cell', cards =>
     cards.map(card => {
       const link = card.querySelector('a[href*="/handla/varor/"]');
       if (!link) return null;
 
-      // Name: use aria-label if available, else image alt or first line
+      // Name from aria-label or fallback to alt/text
       const aria = link.getAttribute('aria-label');
       let name = aria ? aria.split(',')[0].trim() : null;
       if (!name) {
         const img = card.querySelector('img');
-        name = img?.alt?.trim() || card.innerText.split('\n')[0].trim();
+        name = img?.alt?.trim() || card.textContent.split('\n')[0].trim();
       }
       if (!name) return null;
 
@@ -64,7 +91,7 @@ async function scrapePage(page, term, pageNum) {
         : '';
       if (image.startsWith('//')) image = location.protocol + image;
 
-      // Price: find element containing "kr/st"
+      // Price per item: "kr/st"
       const priceEl = Array.from(card.querySelectorAll('div'))
         .find(el => /kr\s*\/st/.test(el.innerText));
       if (!priceEl) return null;
@@ -76,13 +103,12 @@ async function scrapePage(page, term, pageNum) {
     }).filter(x => x)
   );
 
-  console.log(`📊 ${items.length} products found for "${term}" on page ${pageNum}`);
-  return items;
+  console.log(`🔢 Found ${products.length} items on page ${pageNum}`);
+  return products;
 }
 
 /**
- * scrapeCoop(searchTerms, maxPages)
- * Performs a Coop search for each term, scraping up to maxPages of results.
+ * Main scraper entry point: runs a search for the given term and scrapes up to maxPages.
  */
 async function scrapeCoop(searchTerms = ['mjölk'], maxPages = 5) {
   console.log('🚀 Starting Coop scraper…');
@@ -93,19 +119,20 @@ async function scrapeCoop(searchTerms = ['mjölk'], maxPages = 5) {
   });
   const page = await browser.newPage();
   await page.setUserAgent(
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-    'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   );
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'sv-SE,sv;q=0.9,en;q=0.8' });
 
   try {
     const term = Array.isArray(searchTerms) ? searchTerms[0] : searchTerms;
-    let allProducts = [];
+    await performSearch(page, term);
 
+    let allProducts = [];
     for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-      const products = await scrapePage(page, term, pageNum);
-      if (products.length === 0) break;
-      allProducts.push(...products);
+      const items = await scrapeResultsPage(page, pageNum);
+      if (items.length === 0) break;
+      allProducts.push(...items);
     }
 
     // Deduplicate by name+price
